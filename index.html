@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; worker-src 'self' blob: data:;">
+    <title>AI 가위바위보 손 모양 인식기</title>
+    <style>
+        body {
+            background-color: #fff5f5;
+            font-family: 'Pretendard', sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { color: #555; }
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 500px;
+            margin-top: 20px;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+            background-color: #ffe4e1;
+        }
+        video, img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .result-overlay {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px 20px;
+            border-radius: 15px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #333;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            max-width: 600px;
+        }
+        button, label.upload-btn {
+            background-color: #b0e0e6;
+            border: none;
+            padding: 15px 20px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border-radius: 12px;
+            cursor: pointer;
+            color: #444;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.2s, background-color 0.2s;
+            display: inline-block;
+        }
+        button:active, label.upload-btn:active {
+            transform: scale(0.95);
+        }
+        button:hover, label.upload-btn:hover {
+            background-color: #add8e6;
+        }
+        input[type="file"] { display: none; }
+        #statusMessage {
+            margin-top: 15px;
+            font-size: 1.1rem;
+            color: #ff6b6b;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>✌️✊🖐 AI 가위바위보 인식기</h1>
+
+    <div class="video-container">
+        <video id="webcam" autoplay playsinline></video>
+        <img id="fallbackImage" style="display: none;" alt="업로드된 이미지" />
+        <div class="result-overlay" id="resultOverlay">대기 중...</div>
+    </div>
+
+    <div id="statusMessage">카메라를 시작해 주세요.</div>
+
+    <div class="controls">
+        <button id="btnStartCam">카메라 켜기</button>
+        <button id="btnStartRec" disabled>인식 시작</button>
+        <button id="btnStopRec" disabled>인식 중지</button>
+        <button id="btnStopCam" disabled>카메라 끄기</button>
+        
+        <label class="upload-btn">
+            사진 업로드
+            <input type="file" id="fileUpload" accept="image/*">
+        </label>
+    </div>
+
+    <canvas id="canvas" style="display: none;"></canvas>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const fallbackImage = document.getElementById('fallbackImage');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const resultOverlay = document.getElementById('resultOverlay');
+        const statusMessage = document.getElementById('statusMessage');
+        
+        const btnStartCam = document.getElementById('btnStartCam');
+        const btnStartRec = document.getElementById('btnStartRec');
+        const btnStopRec = document.getElementById('btnStopRec');
+        const btnStopCam = document.getElementById('btnStopCam');
+        const fileUpload = document.getElementById('fileUpload');
+
+        let stream = null;
+        let recognizing = false;
+        let isProcessing = false;
+        let useImageUpload = false;
+
+        const classMap = {
+            'rock': '✊ 바위',
+            'paper': '🖐 보',
+            'scissors': '✌ 가위'
+        };
+
+        btnStartCam.addEventListener('click', async () => {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+                video.srcObject = stream;
+                video.style.display = 'block';
+                fallbackImage.style.display = 'none';
+                useImageUpload = false;
+
+                btnStartCam.disabled = true;
+                btnStartRec.disabled = false;
+                btnStopCam.disabled = false;
+                statusMessage.innerText = "카메라가 켜졌습니다. '인식 시작'을 눌러주세요.";
+            } catch (err) {
+                statusMessage.innerText = "카메라 권한을 허용해 주세요.";
+                console.error(err);
+            }
+        });
+
+        btnStopCam.addEventListener('click', () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            stopRecognition();
+            btnStartCam.disabled = false;
+            btnStartRec.disabled = true;
+            btnStopCam.disabled = true;
+            statusMessage.innerText = "카메라가 종료되었습니다.";
+        });
+
+        fileUpload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                fallbackImage.src = event.target.result;
+                fallbackImage.style.display = 'block';
+                video.style.display = 'none';
+                useImageUpload = true;
+
+                btnStartRec.disabled = false;
+                statusMessage.innerText = "사진이 업로드되었습니다.";
+            };
+            reader.readAsDataURL(file);
+        });
+
+        btnStartRec.addEventListener('click', () => {
+            recognizing = true;
+            btnStartRec.disabled = true;
+            btnStopRec.disabled = false;
+            statusMessage.innerText = "인식 중입니다...";
+            recognitionLoop();
+        });
+
+        btnStopRec.addEventListener('click', () => {
+            stopRecognition();
+        });
+
+        function stopRecognition() {
+            recognizing = false;
+            btnStartRec.disabled = false;
+            btnStopRec.disabled = true;
+            statusMessage.innerText = "인식이 중지되었습니다.";
+        }
+
+        async function recognitionLoop() {
+            if (!recognizing) return;
+            if (isProcessing) {
+                setTimeout(recognitionLoop, 500);
+                return;
+            }
+
+            isProcessing = true;
+
+            try {
+                canvas.width = 320;
+                canvas.height = 240;
+
+                if (useImageUpload) {
+                    ctx.drawImage(fallbackImage, 0, 0, 320, 240);
+                } else {
+                    if (video.videoWidth === 0) throw new Error("비디오 준비 안됨");
+                    ctx.drawImage(video, 0, 0, 320, 240);
+                }
+
+                const base64Image = canvas.toDataURL('image/jpeg', 0.5);
+
+                const response = await fetch('/api/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: base64Image })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    resultOverlay.innerText = "오류 발생";
+                    statusMessage.innerText = data.details || data.message || "서버 통신 오류가 발생했습니다.";
+                } else {
+                    displayResult(data);
+                }
+
+            } catch (err) {
+                console.error(err);
+                resultOverlay.innerText = "오류 발생";
+                statusMessage.innerText = "통신 연결에 실패했습니다.";
+            } finally {
+                isProcessing = false;
+                if (recognizing) setTimeout(recognitionLoop, 1000);
+            }
+        }
+
+        function displayResult(data) {
+            console.log("Roboflow 응답 구조:", data);
+
+            let topClass = "알 수 없음";
+            let confidence = 0;
+
+            // Workflow 응답 파싱
+            let targetObj = data;
+            if (Array.isArray(data) && data.length > 0) targetObj = data[0];
+            if (targetObj.outputs && Array.isArray(targetObj.outputs)) targetObj = targetObj.outputs[0];
+
+            // 1) Workflow 내의 predictions / predictions_1 체킹
+            const predictions = targetObj.predictions || targetObj.predictions_1 || (targetObj.result && targetObj.result.predictions);
+
+            if (predictions) {
+                if (Array.isArray(predictions) && predictions.length > 0) {
+                    topClass = predictions[0].class || predictions[0].top || topClass;
+                    confidence = predictions[0].confidence || 0;
+                } else if (typeof predictions === 'object') {
+                    topClass = predictions.top || predictions.class || topClass;
+                    confidence = predictions.confidence || 0;
+                }
+            } else if (targetObj.top) {
+                topClass = targetObj.top;
+                confidence = targetObj.confidence || 0;
+            }
+
+            const displayName = classMap[topClass.toLowerCase()] || topClass;
+            const percent = (confidence * 100).toFixed(1);
+
+            resultOverlay.innerText = `${displayName} (${percent}%)`;
+        }
+    </script>
+</body>
+</html>
